@@ -17,10 +17,10 @@
 
 1. XAMPP Control Panel থেকে **Apache** এবং **MySQL** Start করুন  
 2. প্রজেক্টের ফোল্ডার:  
-   `c:\xampp\htdocs\cityuniversity\`
+   `c:\xampp\htdocs\brhsniversity\`
 3. ডাটাবেস অটো-মাইগ্রেশন চালু থাকে (প্রথমবার পেজ লোড করলেই টেবিল তৈরি হবে)
 4. ডাটাবেস কনফিগ:  
-   `c:\xampp\htdocs\cityuniversity\admin\_lib\config.php`
+   `c:\xampp\htdocs\brhsniversity\admin\_lib\config.php`
 
 ---
 
@@ -111,7 +111,7 @@ FLUSH PRIVILEGES;
 quit;
 ```
 
-Port যদি 3306 না হয় (যেমন 3307), তাহলে Apache `SetEnv CITYU_DB_PORT` এ সেট করুন।
+Port যদি 3306 না হয় (যেমন 3307), তাহলে Apache `SetEnv brhs_DB_PORT` এ সেট করুন।
 
 ### 2.1.5) Web Installer রান (First Admin)
 
@@ -218,13 +218,13 @@ sudo ufw status
 এই প্রজেক্টে RADIUS Server আলাদা CLI daemon হিসেবে রান করে:
 
 ফাইল:  
-`c:\xampp\htdocs\cityuniversity\admin\radiusd.php`
+`c:\xampp\htdocs\brhsniversity\admin\radiusd.php`
 
 ### Run Command (Windows)
 
 1. PowerShell / CMD খুলুন  
 2. এই ডিরেক্টরিতে যান:
-   - `cd c:\xampp\htdocs\cityuniversity`
+   - `cd c:\xampp\htdocs\brhsniversity`
 3. RADIUS daemon চালু করুন:
    - `php admin\radiusd.php`
 
@@ -327,9 +327,9 @@ MikroTik Hotspot সাধারণত PAP সাপোর্ট করে।
 1) Code update:
 
 ```bash
-cd /var/www/cityuniversity
+cd /var/www/html/brhs
 sudo git pull
-sudo chown -R www-data:www-data /var/www/cityuniversity
+sudo chown -R www-data:www-data /var/www/html/brhs
 sudo systemctl reload apache2
 ```
 
@@ -339,14 +339,14 @@ sudo systemctl reload apache2
 3) RADIUS daemon restart (systemd হলে):
 
 ```bash
-sudo systemctl restart cityu-radiusd.service
-sudo systemctl status cityu-radiusd.service
+sudo systemctl restart brhs-radiusd.service
+sudo systemctl status brhs-radiusd.service
 ```
 
 Logs:
 
 ```bash
-sudo journalctl -u cityu-radiusd.service -f
+sudo journalctl -u brhs-radiusd.service -f
 ```
 
 ### 10.2) Windows + XAMPP
@@ -355,7 +355,7 @@ sudo journalctl -u cityu-radiusd.service -f
 2) যদি git ব্যবহার করেন:
 
 ```powershell
-cd C:\xampp\htdocs\cityuniversity
+cd C:\xampp\htdocs\brhsniversity
 git pull
 ```
 
@@ -364,7 +364,7 @@ git pull
 - তারপর আবার চালান:
 
 ```powershell
-cd C:\xampp\htdocs\cityuniversity
+cd C:\xampp\htdocs\brhsniversity
 php admin\radiusd.php
 ```
 

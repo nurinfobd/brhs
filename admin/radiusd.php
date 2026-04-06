@@ -172,6 +172,35 @@ function radius_norm_mac(string $s): string
     return substr($hex, 0, 2) . ':' . substr($hex, 2, 2) . ':' . substr($hex, 4, 2) . ':' . substr($hex, 6, 2) . ':' . substr($hex, 8, 2) . ':' . substr($hex, 10, 2);
 }
 
+function radius_decode_ipv4(?string $b): string
+{
+    if (!is_string($b) || strlen($b) !== 4) {
+        return '';
+    }
+    $u = unpack('C4', $b);
+    if (!is_array($u)) {
+        return '';
+    }
+    $a = (int)($u[1] ?? -1);
+    $c = (int)($u[2] ?? -1);
+    $d = (int)($u[3] ?? -1);
+    $e = (int)($u[4] ?? -1);
+    if ($a < 0 || $a > 255 || $c < 0 || $c > 255 || $d < 0 || $d > 255 || $e < 0 || $e > 255) {
+        return '';
+    }
+    return $a . '.' . $c . '.' . $d . '.' . $e;
+}
+
+function radius_dbg(string $msg): void
+{
+    $v = getenv('CITYU_RADIUS_DEBUG');
+    if (!is_string($v) || $v === '' || $v === '0') {
+        return;
+    }
+    $ts = gmdate('Y-m-d H:i:s');
+    fwrite(STDOUT, "[{$ts}] {$msg}\n");
+}
+
 $bindIp = '0.0.0.0';
 $authPort = 1812;
 $acctPort = 1813;
@@ -220,42 +249,62 @@ while (true) {
             continue;
         }
 
-        $router = store_find_router_by_ip($from);
-        if (!is_array($router)) {
-            continue;
-        }
-        $router = router_normalize($router);
-        if ((int)($router['radius_enabled'] ?? 0) !== 1) {
-            continue;
-        }
-        $secret = (string)($router['radius_secret'] ?? '');
-        if ($secret === '') {
-            continue;
-        }
-
         $code = (int)($packet['code'] ?? 0);
         $id = (int)($packet['id'] ?? 0);
         $reqAuth = (string)($packet['auth'] ?? '');
         $attrs = (array)($packet['attrs'] ?? []);
 
+        $peerIp = $from;
+        $nasIp = radius_decode_ipv4(radius_attr_first($attrs, 4));
+        $routerIp = $peerIp;
+        $router = store_find_router_by_ip($routerIp);
+        if (!is_array($router) && $nasIp !== '' && $nasIp !== $peerIp) {
+            $routerIp = $nasIp;
+            $router = store_find_router_by_ip($routerIp);
+        }
+        if (!is_array($router)) {
+            $nasDbg = $nasIp !== '' ? $nasIp : '-';
+            radius_dbg("drop: unknown router peer_ip={$peerIp} nas_ip={$nasDbg}");
+            store_insert_app_log('warning', 'radius', 'drop unknown router', ['peer_ip' => $peerIp, 'nas_ip' => $nasDbg, 'code' => $code]);
+            continue;
+        }
+        $router = router_normalize($router);
+        if ((int)($router['radius_enabled'] ?? 0) !== 1) {
+            radius_dbg("drop: router_ip={$routerIp} peer_ip={$peerIp} radius_disabled=1");
+            store_insert_app_log('warning', 'radius', 'drop router disabled', ['router_ip' => $routerIp, 'peer_ip' => $peerIp, 'code' => $code]);
+            continue;
+        }
+        $secret = (string)($router['radius_secret'] ?? '');
+        if ($secret === '') {
+            radius_dbg("drop: router_ip={$routerIp} peer_ip={$peerIp} missing_secret");
+            store_insert_app_log('warning', 'radius', 'drop router missing secret', ['router_ip' => $routerIp, 'peer_ip' => $peerIp, 'code' => $code]);
+            continue;
+        }
+
         if ($code === 1) {
             $user = radius_attr_first($attrs, 1);
             $passEnc = radius_attr_first($attrs, 2);
             if (!is_string($user) || $user === '') {
+                radius_dbg("reject: router_ip={$routerIp} peer_ip={$peerIp} reason=missing_username");
+                store_insert_app_log('warning', 'radius', 'reject missing username', ['router_ip' => $routerIp, 'peer_ip' => $peerIp]);
                 $resp = radius_build_response(3, $id, $reqAuth, radius_attr(18, 'Invalid username'), $secret);
-                @socket_sendto($sockAuth, $resp, strlen($resp), 0, $from, $fromPort);
+                @socket_sendto($sockAuth, $resp, strlen($resp), 0, $peerIp, $fromPort);
                 continue;
             }
 
             if (!is_string($passEnc) || $passEnc === '') {
                 $chapPass = radius_attr_first($attrs, 3);
                 if (is_string($chapPass) && $chapPass !== '') {
+                    radius_dbg("reject: router_ip={$routerIp} peer_ip={$peerIp} user=" . trim($user) . " reason=chap_not_supported");
+                    store_insert_app_log('warning', 'radius', 'reject chap not supported', ['router_ip' => $routerIp, 'peer_ip' => $peerIp, 'user' => trim((string)$user)]);
                     $resp = radius_build_response(3, $id, $reqAuth, radius_attr(18, 'CHAP not supported. Enable Hotspot HTTP PAP.'), $secret);
-                    @socket_sendto($sockAuth, $resp, strlen($resp), 0, $from, $fromPort);
+                    @socket_sendto($sockAuth, $resp, strlen($resp), 0, $peerIp, $fromPort);
                     continue;
                 }
+                radius_dbg("reject: router_ip={$routerIp} peer_ip={$peerIp} user=" . trim($user) . " reason=password_missing");
+                store_insert_app_log('warning', 'radius', 'reject password missing', ['router_ip' => $routerIp, 'peer_ip' => $peerIp, 'user' => trim((string)$user)]);
                 $resp = radius_build_response(3, $id, $reqAuth, radius_attr(18, 'Password missing'), $secret);
-                @socket_sendto($sockAuth, $resp, strlen($resp), 0, $from, $fromPort);
+                @socket_sendto($sockAuth, $resp, strlen($resp), 0, $peerIp, $fromPort);
                 continue;
             }
 
@@ -321,6 +370,15 @@ while (true) {
                 }
             }
 
+            if ($ok) {
+                radius_dbg("accept: router_ip={$routerIp} peer_ip={$peerIp} user={$userRaw} db_user={$dbUser} profile={$profile} quota={$quotaBytes}");
+                store_insert_app_log('info', 'radius', 'accept', ['router_ip' => $routerIp, 'peer_ip' => $peerIp, 'user' => $userRaw, 'db_user' => $dbUser, 'profile' => $profile, 'quota_bytes' => $quotaBytes]);
+            } else {
+                $uState = is_array($u) ? 'found' : 'not_found';
+                radius_dbg("reject: router_ip={$routerIp} peer_ip={$peerIp} user={$userRaw} norm={$userNorm} user_state={$uState} reason=" . str_replace(' ', '_', $replyMsg));
+                store_insert_app_log('warning', 'radius', 'reject', ['router_ip' => $routerIp, 'peer_ip' => $peerIp, 'user' => $userRaw, 'user_state' => $uState, 'reason' => $replyMsg]);
+            }
+
             $respAttrs = '';
             if ($ok && $profile !== '') {
                 $respAttrs .= radius_vsa(14988, 3, $profile);
@@ -348,7 +406,7 @@ while (true) {
                 $respAttrs .= radius_attr(18, $replyMsg);
             }
             $resp = radius_build_response($ok ? 2 : 3, $id, $reqAuth, $respAttrs, $secret);
-            @socket_sendto($sockAuth, $resp, strlen($resp), 0, $from, $fromPort);
+            @socket_sendto($sockAuth, $resp, strlen($resp), 0, $peerIp, $fromPort);
             continue;
         }
 
@@ -429,7 +487,7 @@ while (true) {
 
             store_insert_radius_accounting([
                 'ts' => time(),
-                'nas_ip' => $from,
+                'nas_ip' => $routerIp,
                 'username' => $uNameStore,
                 'session_id' => $sessId,
                 'status_type' => $statusType,
@@ -438,9 +496,12 @@ while (true) {
                 'session_time' => $sessTime,
                 'raw_attrs' => radius_attrs_to_json($attrs),
             ]);
+            if ($statusType !== '' && $statusType !== 'Interim-Update') {
+                store_insert_app_log('info', 'radius', 'accounting ' . $statusType, ['router_ip' => $routerIp, 'peer_ip' => $peerIp, 'user' => $uNameStore, 'session_id' => $sessId]);
+            }
 
             $resp = radius_build_response(5, $id, $reqAuth, '', $secret);
-            @socket_sendto($sockAcct, $resp, strlen($resp), 0, $from, $fromPort);
+            @socket_sendto($sockAcct, $resp, strlen($resp), 0, $peerIp, $fromPort);
             continue;
         }
     }

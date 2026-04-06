@@ -12,6 +12,68 @@ function store_load(): array
     ];
 }
 
+function store_insert_app_log(string $level, string $category, string $message, array $context = []): void
+{
+    $level = strtolower(trim($level));
+    if ($level === '') {
+        $level = 'info';
+    }
+    if (!in_array($level, ['debug', 'info', 'warning', 'error'], true)) {
+        $level = 'info';
+    }
+    $category = strtolower(trim($category));
+    if ($category === '') {
+        $category = 'app';
+    }
+    if (strlen($category) > 32) {
+        $category = substr($category, 0, 32);
+    }
+    $message = trim($message);
+    if ($message === '') {
+        return;
+    }
+    if (strlen($message) > 5000) {
+        $message = substr($message, 0, 5000);
+    }
+
+    $ctxJson = null;
+    if (count($context) > 0) {
+        $ctxJson = json_encode($context, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if (!is_string($ctxJson)) {
+            $ctxJson = null;
+        } elseif (strlen($ctxJson) > 20000) {
+            $ctxJson = substr($ctxJson, 0, 20000);
+        }
+    }
+
+    try {
+        $pdo = db();
+        $stmt = $pdo->prepare(
+            "INSERT INTO app_logs (ts, level, category, message, context_json)
+             VALUES (:ts, :lvl, :cat, :msg, :ctx)"
+        );
+        $stmt->execute([
+            ':ts' => time(),
+            ':lvl' => $level,
+            ':cat' => $category,
+            ':msg' => $message,
+            ':ctx' => $ctxJson,
+        ]);
+
+        $pdo->exec(
+            "DELETE FROM app_logs
+             WHERE id < (
+                 SELECT IFNULL(MIN(id), 0)
+                 FROM (
+                     SELECT id FROM app_logs ORDER BY id DESC LIMIT 20000
+                 ) t
+             )"
+        );
+    } catch (Throwable $e) {
+        return;
+    }
+}
+
 function store_get_router(string $routerId): ?array
 {
     $pdo = db();

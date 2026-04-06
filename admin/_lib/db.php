@@ -268,6 +268,20 @@ function db_migrate(): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
     );
 
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS app_logs (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            ts INT UNSIGNED NOT NULL,
+            level VARCHAR(16) NOT NULL DEFAULT 'info',
+            category VARCHAR(32) NOT NULL DEFAULT 'app',
+            message TEXT NOT NULL,
+            context_json MEDIUMTEXT NULL,
+            INDEX idx_app_logs_ts (ts),
+            INDEX idx_app_logs_cat_ts (category, ts),
+            INDEX idx_app_logs_level_ts (level, ts)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
     $cacheCols = $pdo->query("SHOW COLUMNS FROM router_interface_snmp_cache")->fetchAll();
     $cacheTypes = [];
     foreach ($cacheCols as $c) {

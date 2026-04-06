@@ -549,8 +549,10 @@ function mikrotik_api_connect(array $router): ?RouterOSAPI
     }
     $api = new RouterOSAPI();
     if (!$api->connect($router['ip'], $router['username'], $router['password'], $router['api_port'], 6)) {
+        store_insert_app_log('error', 'mikrotik', 'api connect failed', ['router_ip' => $router['ip'], 'api_port' => $router['api_port']]);
         return null;
     }
+    store_insert_app_log('info', 'mikrotik', 'api connect ok', ['router_ip' => $router['ip'], 'api_port' => $router['api_port']]);
     return $api;
 }
 

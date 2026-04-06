@@ -13,9 +13,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $password = (string)($_POST['password'] ?? '');
     if ($username === '' || $password === '') {
         $error = 'Enter username and password.';
+        store_insert_app_log('warning', 'auth', 'login failed: missing credentials', ['username' => $username]);
     } elseif (!login_attempt($username, $password)) {
         $error = 'Invalid credentials.';
+        store_insert_app_log('warning', 'auth', 'login failed: invalid credentials', ['username' => $username]);
     } else {
+        store_insert_app_log('info', 'auth', 'login ok', ['username' => $username]);
         if ((bool)($_SESSION['must_change_password'] ?? false)) {
             header('Location: ' . base_url('change-password.php'));
         } else {

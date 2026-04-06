@@ -67,6 +67,11 @@ ob_start();
         </a>
     </li>
     <li class="nav-item">
+        <a class="nav-link <?php echo ($active ?? '') === 'status' ? e($activeClass) : ''; ?>" href="<?php echo e(base_url('status.php')); ?>">
+            <i class="bi bi-clipboard-data me-2"></i>Status
+        </a>
+    </li>
+    <li class="nav-item">
         <a class="nav-link <?php echo ($active ?? '') === 'router' ? e($activeClass) : ''; ?>" href="<?php echo e(base_url('routers.php')); ?>">
             <i class="bi bi-hdd-network me-2"></i>Router
         </a>
@@ -209,7 +214,7 @@ $sidebarFooterHtml = ob_get_clean();
         <div class="d-flex align-items-center gap-2" id="mobileSidebarLabel">
             <img src="<?php echo e(base_url('logo.png')); ?>" alt="Logo" class="brand-logo">
             <div>
-                <div class="fw-semibold <?php echo e($sidebarText); ?>">City University</div>
+                <div class="fw-semibold <?php echo e($sidebarText); ?>">Bangladesh Railway</div>
                 <div class="small text-body-secondary">Hotspot Portal</div>
             </div>
         </div>
