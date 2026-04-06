@@ -40,14 +40,17 @@ RADIUS daemon এর জন্য PHP sockets module দরকার। চে�
 
 ```bash
 php -m | grep -i sockets
+---------------------------------------------
+root@railway-srv:~# php -m | grep -i sockets
+sockets
 ```
 
 ### 2.1.2) প্রজেক্ট কোড ডেপলয়
 
 ```bash
-cd /var/www
-sudo git clone https://github.com/nurinfobd/brhs.git cityuniversity
-sudo chown -R www-data:www-data /var/www/cityuniversity
+cd /var/www/html
+sudo git clone https://github.com/nurinfobd/brhs.git brhs
+sudo chown -R www-data:www-data /var/www/html/brhs
 ```
 
 ### 2.1.3) Apache VirtualHost সেটআপ
@@ -55,34 +58,37 @@ sudo chown -R www-data:www-data /var/www/cityuniversity
 Example (HTTP only):
 
 ```bash
+systemctl restart apache2
 sudo a2enmod rewrite
-sudo nano /etc/apache2/sites-available/cityuniversity.conf
+sudo nano /etc/apache2/sites-available/brhs.conf
 ```
 
-`cityuniversity.conf` এ উদাহরণ:
+`brhs.conf` এ উদাহরণ:
 
 ```apache
 <VirtualHost *:80>
     ServerName your-domain.com
-    DocumentRoot /var/www/cityuniversity
+    DocumentRoot /var/www/html/brhs
 
-    <Directory /var/www/cityuniversity>
+    <Directory /var/www/html/brhs>
         AllowOverride All
         Require all granted
     </Directory>
 
     SetEnv CITYU_DB_HOST 127.0.0.1
     SetEnv CITYU_DB_PORT 3306
-    SetEnv CITYU_DB_NAME cityuniversity
-    SetEnv CITYU_DB_USER cityu_user
-    SetEnv CITYU_DB_PASS your_password
+    SetEnv CITYU_DB_NAME brhsDB
+    SetEnv CITYU_DB_USER brhs_user
+    SetEnv CITYU_DB_PASS asdf@123
 </VirtualHost>
 ```
 
 Enable করে restart দিন:
 
 ```bash
-sudo a2ensite cityuniversity.conf
+systemctl reload apache2
+sudo a2ensite brhs.conf
+systemctl reload apache2
 sudo a2dissite 000-default.conf
 sudo systemctl reload apache2
 ```
@@ -98,10 +104,11 @@ sudo mysql
 তারপর:
 
 ```sql
-CREATE DATABASE cityuniversity CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'cityu_user'@'localhost' IDENTIFIED BY 'your_password';
-GRANT ALL PRIVILEGES ON cityuniversity.* TO 'cityu_user'@'localhost';
+CREATE DATABASE brhsDB CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'brhs_user'@'localhost' IDENTIFIED BY 'asdf@123';
+GRANT ALL PRIVILEGES ON brhsDB.* TO 'brhs_user'@'localhost';
 FLUSH PRIVILEGES;
+quit;
 ```
 
 Port যদি 3306 না হয় (যেমন 3307), তাহলে Apache `SetEnv CITYU_DB_PORT` এ সেট করুন।
@@ -118,28 +125,28 @@ Browser থেকে ওপেন করুন:
 RADIUS daemon সবসময় চালু রাখতে systemd service তৈরি করুন:
 
 ```bash
-sudo nano /etc/systemd/system/cityu-radiusd.service
+sudo nano /etc/systemd/system/brhs-radiusd.service
 ```
 
 Example:
 
 ```ini
 [Unit]
-Description=CityUniversity RADIUS Daemon
+Description=Brhs RADIUS Daemon
 After=network.target mariadb.service
 
 [Service]
 Type=simple
-WorkingDirectory=/var/www/cityuniversity
-ExecStart=/usr/bin/php /var/www/cityuniversity/admin/radiusd.php
+WorkingDirectory=/var/www/html/brhs
+ExecStart=/usr/bin/php /var/www/html/brhs/admin/radiusd.php
 Restart=always
 RestartSec=2
 
 Environment=CITYU_DB_HOST=127.0.0.1
 Environment=CITYU_DB_PORT=3306
-Environment=CITYU_DB_NAME=cityuniversity
-Environment=CITYU_DB_USER=cityu_user
-Environment=CITYU_DB_PASS=your_password
+Environment=CITYU_DB_NAME=brhsDB
+Environment=CITYU_DB_USER=brhs_user
+Environment=CITYU_DB_PASS=asdf@123
 
 [Install]
 WantedBy=multi-user.target
@@ -149,15 +156,18 @@ Enable + start:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now cityu-radiusd.service
-sudo systemctl status cityu-radiusd.service
+sudo systemctl enable --now brhs-radiusd.service
+sudo systemctl status brhs-radiusd.service
 ```
 
 Logs দেখতে:
 
 ```bash
-sudo journalctl -u cityu-radiusd.service -f
+sudo journalctl -u brhs-radiusd.service -f   
 ```
+root@railway-srv:/var/www/html# sudo journalctl -u brhs-radiusd.service -f   
+Apr 06 11:41:51 railway-srv systemd[1]: Started brhs-radiusd.service - Brhs RADIUS Daemon.
+Apr 06 11:41:51 railway-srv php[39569]: RADIUS started on 0.0.0.0:1812/1813
 
 ### 2.1.7) Firewall (Important)
 
