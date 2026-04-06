@@ -1,0 +1,40 @@
+services:
+  db:
+    image: mariadb:10.11
+    command: ["--port=3307"]
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: cityuniversity
+    volumes:
+      - db_data:/var/lib/mysql
+    ports:
+      - "8080:80"
+      - "1812:1812/udp"
+      - "1813:1813/udp"
+      - "3307:3307"
+    restart: unless-stopped
+
+  web:
+    image: webdevops/php-apache:8.2
+    environment:
+      WEB_DOCUMENT_ROOT: /app
+    volumes:
+      - ..:/app
+    network_mode: "service:db"
+    depends_on:
+      - db
+    restart: unless-stopped
+
+  radiusd:
+    image: webdevops/php:8.2
+    command: ["php", "/app/admin/radiusd.php"]
+    volumes:
+      - ..:/app
+    network_mode: "service:db"
+    depends_on:
+      - db
+    restart: unless-stopped
+
+volumes:
+  db_data:
+

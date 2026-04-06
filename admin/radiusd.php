@@ -1,0 +1,438 @@
+<?php
+declare(strict_types=1);
+
+if (php_sapi_name() !== 'cli') {
+    http_response_code(403);
+    echo 'CLI only';
+    exit;
+}
+
+require __DIR__ . '/_lib/config.php';
+require __DIR__ . '/_lib/db.php';
+require __DIR__ . '/_lib/store.php';
+require __DIR__ . '/_lib/mikrotik.php';
+
+try {
+    db_migrate();
+} catch (Throwable $e) {
+    fwrite(STDERR, "DB migrate failed\n");
+    exit(1);
+}
+
+function radius_parse_packet(string $buf): ?array
+{
+    if (strlen($buf) < 20) {
+        return null;
+    }
+    $code = ord($buf[0]);
+    $id = ord($buf[1]);
+    $len = unpack('n', substr($buf, 2, 2))[1] ?? 0;
+    if ($len < 20 || $len > strlen($buf)) {
+        return null;
+    }
+    $auth = substr($buf, 4, 16);
+    $attrData = substr($buf, 20, $len - 20);
+    $attrs = [];
+    $p = 0;
+    $attrLen = strlen($attrData);
+    while ($p + 2 <= $attrLen) {
+        $t = ord($attrData[$p]);
+        $l = ord($attrData[$p + 1]);
+        if ($l < 2 || $p + $l > $attrLen) {
+            break;
+        }
+        $v = substr($attrData, $p + 2, $l - 2);
+        if (!isset($attrs[$t])) {
+            $attrs[$t] = [];
+        }
+        $attrs[$t][] = $v;
+        $p += $l;
+    }
+    return ['code' => $code, 'id' => $id, 'len' => $len, 'auth' => $auth, 'attrs' => $attrs];
+}
+
+function radius_attr_first(array $attrs, int $type): ?string
+{
+    $v = $attrs[$type] ?? null;
+    if (!is_array($v) || count($v) === 0) {
+        return null;
+    }
+    $first = $v[0] ?? null;
+    return is_string($first) ? $first : null;
+}
+
+function radius_pap_decrypt(string $cipher, string $secret, string $requestAuth): string
+{
+    $out = '';
+    $prev = $requestAuth;
+    $n = strlen($cipher);
+    $blocks = (int)ceil($n / 16);
+    for ($i = 0; $i < $blocks; $i++) {
+        $c = substr($cipher, $i * 16, 16);
+        $c = str_pad($c, 16, "\0", STR_PAD_RIGHT);
+        $h = md5($secret . $prev, true);
+        $p = $c ^ $h;
+        $out .= $p;
+        $prev = $c;
+    }
+    return rtrim($out, "\0");
+}
+
+function radius_attr(int $type, string $value): string
+{
+    $len = 2 + strlen($value);
+    if ($len > 255) {
+        $value = substr($value, 0, 253);
+        $len = 255;
+    }
+    return chr($type) . chr($len) . $value;
+}
+
+function radius_vsa(int $vendorId, int $vendorType, string $vendorValue): string
+{
+    $innerLen = 2 + strlen($vendorValue);
+    if ($innerLen > 255) {
+        $vendorValue = substr($vendorValue, 0, 253);
+        $innerLen = 255;
+    }
+    $v = pack('N', $vendorId) . chr($vendorType) . chr($innerLen) . $vendorValue;
+    return radius_attr(26, $v);
+}
+
+function radius_vsa_int(int $vendorId, int $vendorType, int $value): string
+{
+    $v = pack('N', $value & 0xFFFFFFFF);
+    return radius_vsa($vendorId, $vendorType, $v);
+}
+
+function u32_from_bin(?string $b): int
+{
+    if (!is_string($b) || strlen($b) !== 4) {
+        return 0;
+    }
+    $n = unpack('N', $b)[1] ?? 0;
+    return (int)$n;
+}
+
+function u64_from_octets(int $octets32, int $gigawords): int
+{
+    $octets32 = $octets32 & 0xFFFFFFFF;
+    $gigawords = $gigawords & 0xFFFFFFFF;
+    $base = 4294967296;
+    return (int)($gigawords * $base + $octets32);
+}
+
+function radius_build_response(int $code, int $id, string $requestAuth, string $attrsBin, string $secret): string
+{
+    $len = 20 + strlen($attrsBin);
+    $hdr = chr($code) . chr($id) . pack('n', $len);
+    $toHash = $hdr . $requestAuth . $attrsBin . $secret;
+    $auth = md5($toHash, true);
+    return $hdr . $auth . $attrsBin;
+}
+
+function radius_attrs_to_json(array $attrs): string
+{
+    $out = [];
+    foreach ($attrs as $k => $vals) {
+        if (!is_array($vals)) {
+            continue;
+        }
+        $arr = [];
+        foreach ($vals as $v) {
+            if (!is_string($v)) {
+                continue;
+            }
+            $arr[] = bin2hex($v);
+        }
+        $out[(string)$k] = $arr;
+    }
+    return json_encode($out, JSON_UNESCAPED_SLASHES) ?: '';
+}
+
+function radius_norm_mac(string $s): string
+{
+    $t = strtoupper(trim($s));
+    if ($t === '') {
+        return '';
+    }
+    $hex = preg_replace('/[^0-9A-F]/', '', $t);
+    if (!is_string($hex) || strlen($hex) !== 12) {
+        return trim($s);
+    }
+    return substr($hex, 0, 2) . ':' . substr($hex, 2, 2) . ':' . substr($hex, 4, 2) . ':' . substr($hex, 6, 2) . ':' . substr($hex, 8, 2) . ':' . substr($hex, 10, 2);
+}
+
+$bindIp = '0.0.0.0';
+$authPort = 1812;
+$acctPort = 1813;
+
+$sockAuth = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+$sockAcct = socket_create(AF_INET, SOCK_DGRAM, SOL_UDP);
+if ($sockAuth === false || $sockAcct === false) {
+    fwrite(STDERR, "socket_create failed\n");
+    exit(1);
+}
+
+@socket_set_option($sockAuth, SOL_SOCKET, SO_REUSEADDR, 1);
+@socket_set_option($sockAcct, SOL_SOCKET, SO_REUSEADDR, 1);
+
+if (!@socket_bind($sockAuth, $bindIp, $authPort)) {
+    fwrite(STDERR, "bind failed (auth)\n");
+    exit(1);
+}
+if (!@socket_bind($sockAcct, $bindIp, $acctPort)) {
+    fwrite(STDERR, "bind failed (acct)\n");
+    exit(1);
+}
+
+fwrite(STDOUT, "RADIUS started on {$bindIp}:{$authPort}/{$acctPort}\n");
+
+while (true) {
+    $read = [$sockAuth, $sockAcct];
+    $write = [];
+    $except = [];
+    $n = @socket_select($read, $write, $except, 1);
+    if ($n === false || $n === 0) {
+        continue;
+    }
+
+    foreach ($read as $sock) {
+        $buf = '';
+        $from = '';
+        $fromPort = 0;
+        $recv = @socket_recvfrom($sock, $buf, 4096, 0, $from, $fromPort);
+        if ($recv === false || !is_string($buf) || $buf === '') {
+            continue;
+        }
+
+        $packet = radius_parse_packet($buf);
+        if (!is_array($packet)) {
+            continue;
+        }
+
+        $router = store_find_router_by_ip($from);
+        if (!is_array($router)) {
+            continue;
+        }
+        $router = router_normalize($router);
+        if ((int)($router['radius_enabled'] ?? 0) !== 1) {
+            continue;
+        }
+        $secret = (string)($router['radius_secret'] ?? '');
+        if ($secret === '') {
+            continue;
+        }
+
+        $code = (int)($packet['code'] ?? 0);
+        $id = (int)($packet['id'] ?? 0);
+        $reqAuth = (string)($packet['auth'] ?? '');
+        $attrs = (array)($packet['attrs'] ?? []);
+
+        if ($code === 1) {
+            $user = radius_attr_first($attrs, 1);
+            $passEnc = radius_attr_first($attrs, 2);
+            if (!is_string($user) || $user === '') {
+                $resp = radius_build_response(3, $id, $reqAuth, radius_attr(18, 'Invalid username'), $secret);
+                @socket_sendto($sockAuth, $resp, strlen($resp), 0, $from, $fromPort);
+                continue;
+            }
+
+            if (!is_string($passEnc) || $passEnc === '') {
+                $chapPass = radius_attr_first($attrs, 3);
+                if (is_string($chapPass) && $chapPass !== '') {
+                    $resp = radius_build_response(3, $id, $reqAuth, radius_attr(18, 'CHAP not supported. Enable Hotspot HTTP PAP.'), $secret);
+                    @socket_sendto($sockAuth, $resp, strlen($resp), 0, $from, $fromPort);
+                    continue;
+                }
+                $resp = radius_build_response(3, $id, $reqAuth, radius_attr(18, 'Password missing'), $secret);
+                @socket_sendto($sockAuth, $resp, strlen($resp), 0, $from, $fromPort);
+                continue;
+            }
+
+            $userRaw = trim($user);
+            $userNorm = radius_norm_mac($userRaw);
+            $pass = radius_pap_decrypt($passEnc, $secret, $reqAuth);
+            $passRaw = (string)$pass;
+            $passNorm = radius_norm_mac($passRaw);
+
+            $u = store_find_radius_user_by_username($userNorm);
+            if (!is_array($u) && $userNorm !== $userRaw) {
+                $u = store_find_radius_user_by_username($userRaw);
+            }
+            $ok = false;
+            $profile = '';
+            $rateLimit = '';
+            $quotaBytes = 0;
+            $replyMsg = 'Invalid username/password';
+            if (is_array($u)) {
+                $dbUser = trim((string)($u['username'] ?? ''));
+                if ($dbUser === '') {
+                    $dbUser = $userNorm !== '' ? $userNorm : $userRaw;
+                }
+                if ((int)($u['disabled'] ?? 0) === 1) {
+                    $replyMsg = 'User disabled';
+                } else {
+                    $hash = (string)($u['password_hash'] ?? '');
+                    $passOk = false;
+                    if ($hash !== '' && password_verify($passRaw, $hash)) {
+                        $passOk = true;
+                    } elseif ($hash !== '' && $passNorm !== $passRaw && password_verify($passNorm, $hash)) {
+                        $passOk = true;
+                    }
+                    if ($passOk) {
+                        $ok = true;
+                        $profile = trim((string)($u['profile'] ?? ''));
+                        $userQuota = (int)($u['quota_bytes'] ?? 0);
+                        $quotaBytes = $userQuota > 0 ? $userQuota : 0;
+
+                        $routerId = (string)($router['id'] ?? '');
+                        if ($routerId !== '' && $profile !== '') {
+                            $pl = store_get_hotspot_profile_limit($routerId, $profile);
+                            if (is_array($pl)) {
+                                if ($rateLimit === '') {
+                                    $rateLimit = trim((string)($pl['rate_limit'] ?? ''));
+                                }
+                                if ($quotaBytes <= 0) {
+                                    $pq = (int)($pl['quota_bytes'] ?? 0);
+                                    $quotaBytes = $pq > 0 ? $pq : 0;
+                                }
+                            }
+                        }
+
+                    }
+                }
+            }
+
+            if ($ok && $quotaBytes > 0) {
+                $used = store_get_radius_user_usage_bytes($dbUser);
+                if ($used >= $quotaBytes) {
+                    $ok = false;
+                    $replyMsg = 'Quota exceeded';
+                }
+            }
+
+            $respAttrs = '';
+            if ($ok && $profile !== '') {
+                $respAttrs .= radius_vsa(14988, 3, $profile);
+            }
+            if ($ok && $rateLimit !== '') {
+                $respAttrs .= radius_vsa(14988, 8, $rateLimit);
+            }
+            if ($ok && $quotaBytes > 0) {
+                $used = store_get_radius_user_usage_bytes($dbUser);
+                $remain = $quotaBytes - $used;
+                if ($remain < 0) {
+                    $remain = 0;
+                }
+                $low = $remain & 0xFFFFFFFF;
+                $high = (int)floor($remain / 4294967296);
+                $respAttrs .= radius_vsa_int(14988, 17, $low);
+                $respAttrs .= radius_vsa_int(14988, 18, $high);
+
+                $respAttrs .= radius_vsa_int(14988, 1, $low);
+                $respAttrs .= radius_vsa_int(14988, 14, $high);
+                $respAttrs .= radius_vsa_int(14988, 2, $low);
+                $respAttrs .= radius_vsa_int(14988, 15, $high);
+            }
+            if (!$ok) {
+                $respAttrs .= radius_attr(18, $replyMsg);
+            }
+            $resp = radius_build_response($ok ? 2 : 3, $id, $reqAuth, $respAttrs, $secret);
+            @socket_sendto($sockAuth, $resp, strlen($resp), 0, $from, $fromPort);
+            continue;
+        }
+
+        if ($code === 4) {
+            $user = radius_attr_first($attrs, 1) ?? '';
+            $statusType = '';
+            $st = radius_attr_first($attrs, 40);
+            if (is_string($st) && strlen($st) === 4) {
+                $statusTypeNum = unpack('N', $st)[1] ?? 0;
+                $map = [1 => 'Start', 2 => 'Stop', 3 => 'Interim-Update', 7 => 'Accounting-On', 8 => 'Accounting-Off'];
+                $statusType = (string)($map[(int)$statusTypeNum] ?? (string)$statusTypeNum);
+            }
+            $sid = radius_attr_first($attrs, 44) ?? '';
+            $inOct = 0;
+            $outOct = 0;
+            $inGw = 0;
+            $outGw = 0;
+            $sessTime = 0;
+            $io = radius_attr_first($attrs, 42);
+            if (is_string($io) && strlen($io) === 4) {
+                $inOct = (int)(unpack('N', $io)[1] ?? 0);
+            }
+            $oo = radius_attr_first($attrs, 43);
+            if (is_string($oo) && strlen($oo) === 4) {
+                $outOct = (int)(unpack('N', $oo)[1] ?? 0);
+            }
+            $ig = radius_attr_first($attrs, 52);
+            if (is_string($ig) && strlen($ig) === 4) {
+                $inGw = (int)(unpack('N', $ig)[1] ?? 0);
+            }
+            $og = radius_attr_first($attrs, 53);
+            if (is_string($og) && strlen($og) === 4) {
+                $outGw = (int)(unpack('N', $og)[1] ?? 0);
+            }
+            $stt = radius_attr_first($attrs, 46);
+            if (is_string($stt) && strlen($stt) === 4) {
+                $sessTime = (int)(unpack('N', $stt)[1] ?? 0);
+            }
+
+            $uNameRaw = is_string($user) ? trim($user) : '';
+            $uNameNorm = radius_norm_mac($uNameRaw);
+            $sessId = is_string($sid) ? $sid : '';
+            $inTotal = u64_from_octets($inOct, $inGw);
+            $outTotal = u64_from_octets($outOct, $outGw);
+            $deltaTotal = 0;
+            $uNameStore = $uNameNorm !== '' ? $uNameNorm : $uNameRaw;
+            if ($uNameStore !== '') {
+                $uRow = store_find_radius_user_by_username($uNameStore);
+                if (!is_array($uRow) && $uNameStore !== $uNameRaw && $uNameRaw !== '') {
+                    $uRow = store_find_radius_user_by_username($uNameRaw);
+                }
+                if (is_array($uRow) && (string)($uRow['username'] ?? '') !== '') {
+                    $uNameStore = (string)$uRow['username'];
+                }
+            }
+
+            if ($sessId !== '' && $uNameStore !== '') {
+                $prev = store_get_radius_session_usage($sessId);
+                $prevIn = is_array($prev) ? (int)($prev['last_in'] ?? 0) : 0;
+                $prevOut = is_array($prev) ? (int)($prev['last_out'] ?? 0) : 0;
+                $dIn = $inTotal - $prevIn;
+                $dOut = $outTotal - $prevOut;
+                if ($dIn < 0) {
+                    $dIn = 0;
+                }
+                if ($dOut < 0) {
+                    $dOut = 0;
+                }
+                $deltaTotal = (int)($dIn + $dOut);
+                store_upsert_radius_session_usage($sessId, $uNameStore, $inTotal, $outTotal);
+                if ($deltaTotal > 0) {
+                    store_add_radius_user_usage_bytes($uNameStore, $deltaTotal);
+                }
+                if ($statusType === 'Stop') {
+                    store_delete_radius_session_usage($sessId);
+                }
+            }
+
+            store_insert_radius_accounting([
+                'ts' => time(),
+                'nas_ip' => $from,
+                'username' => $uNameStore,
+                'session_id' => $sessId,
+                'status_type' => $statusType,
+                'input_octets' => $inTotal,
+                'output_octets' => $outTotal,
+                'session_time' => $sessTime,
+                'raw_attrs' => radius_attrs_to_json($attrs),
+            ]);
+
+            $resp = radius_build_response(5, $id, $reqAuth, '', $secret);
+            @socket_sendto($sockAcct, $resp, strlen($resp), 0, $from, $fromPort);
+            continue;
+        }
+    }
+}
