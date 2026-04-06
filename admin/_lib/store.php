@@ -720,6 +720,62 @@ function store_insert_radius_accounting(array $row): void
     ]);
 }
 
+function store_insert_radius_accounting_error(array $row): void
+{
+    $msg = trim((string)($row['message'] ?? ''));
+    if ($msg === '') {
+        return;
+    }
+    if (strlen($msg) > 5000) {
+        $msg = substr($msg, 0, 5000);
+    }
+    $raw = (string)($row['raw_attrs'] ?? '');
+    if ($raw !== '' && strlen($raw) > 20000) {
+        $raw = substr($raw, 0, 20000);
+    }
+    $type = strtolower(trim((string)($row['error_type'] ?? 'error')));
+    if ($type === '') {
+        $type = 'error';
+    }
+    if (!in_array($type, ['error', 'warning'], true)) {
+        $type = 'error';
+    }
+
+    try {
+        $pdo = db();
+        $stmt = $pdo->prepare(
+            "INSERT INTO radius_accounting_errors
+                (ts, router_ip, peer_ip, nas_ip, username, session_id, status_type, error_type, message, raw_attrs)
+             VALUES
+                (:ts, :rip, :pip, :nas, :u, :sid, :st, :typ, :msg, :raw)"
+        );
+        $stmt->execute([
+            ':ts' => (int)($row['ts'] ?? time()),
+            ':rip' => (string)($row['router_ip'] ?? ''),
+            ':pip' => (string)($row['peer_ip'] ?? ''),
+            ':nas' => (string)($row['nas_ip'] ?? ''),
+            ':u' => (string)($row['username'] ?? ''),
+            ':sid' => (string)($row['session_id'] ?? ''),
+            ':st' => (string)($row['status_type'] ?? ''),
+            ':typ' => $type,
+            ':msg' => $msg,
+            ':raw' => $raw !== '' ? $raw : null,
+        ]);
+
+        $pdo->exec(
+            "DELETE FROM radius_accounting_errors
+             WHERE id < (
+                 SELECT IFNULL(MIN(id), 0)
+                 FROM (
+                     SELECT id FROM radius_accounting_errors ORDER BY id DESC LIMIT 20000
+                 ) t
+             )"
+        );
+    } catch (Throwable $e) {
+        return;
+    }
+}
+
 function store_find_user_by_username(string $username): ?array
 {
     $pdo = db();

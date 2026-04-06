@@ -381,3 +381,86 @@ php admin\radiusd.php
 3) এরপর:
 - Admin login page একবার open করুন (migration auto হবে)
 - RADIUS daemon restart করুন
+=====================================================
+
+## 11) Current Setup + DB Migration (Important)
+
+এই প্রজেক্টে DB schema update আলাদা migration tool না—`admin/_lib/db.php` এর `db_migrate()` **auto run** হয়:
+- Admin panel এর যেকোনো page open করলে (যেমন `admin/login.php`)
+- RADIUS daemon start হলে (`php admin/radiusd.php`)
+
+### 11.1) New tables (recent updates)
+
+Auto-create হবে:
+- `app_logs` → Login / MikroTik API / RADIUS accept-reject-drop / errors
+- `radius_accounting_errors` → Accounting packet drop / DB insert error diagnostics
+
+### 11.2) Upgrade steps (Ubuntu)
+
+1) Code update (git)
+
+যদি `git pull` এ “local changes overwritten” আসে (সাধারণত `admin/_lib/config.php` বা `admin/_partials/layout.php`):
+
+```bash
+cd /var/www/html/brhs
+sudo git stash push -m "local changes before pull" admin/_lib/config.php admin/_partials/layout.php
+sudo git pull
+sudo git stash pop
+```
+
+2) DB migration run
+- Browser দিয়ে `http://your-domain.com/admin/login.php` একবার open করুন
+
+3) RADIUS daemon restart
+
+```bash
+sudo systemctl restart brhs-radiusd.service
+sudo systemctl status brhs-radiusd.service --no-pager
+```
+
+4) Live logs
+
+```bash
+sudo journalctl -u brhs-radiusd.service -f
+```
+
+### 11.3) DB config (recommended)
+
+Ubuntu deploy এ DB config ফাইল edit না করে Environment variables ব্যবহার করুন:
+- `CITYU_DB_HOST`
+- `CITYU_DB_PORT`
+- `CITYU_DB_NAME`
+- `CITYU_DB_USER`
+- `CITYU_DB_PASS`
+
+systemd example: `/etc/systemd/system/brhs-radiusd.service`
+
+### 11.4) Debug / Status pages
+
+- Status page: `admin/status.php`
+- Accounting errors page: `admin/radius-accounting-errors.php`
+
+RADIUS daemon debug (systemd):
+
+```ini
+Environment=CITYU_RADIUS_DEBUG=1
+```
+
+### 11.5) If accounting logs are empty
+
+1) Server এ UDP 1813 packet আসছে কি না দেখুন:
+
+```bash
+sudo tcpdump -ni any udp port 1813
+```
+
+2) MikroTik এ accounting enable আছে কি না:
+
+```routeros
+/radius print detail
+/radius set [find where service~"hotspot"] accounting=yes
+```
+
+3) Firewall allow:
+- UDP 1812 (Auth)
+- UDP 1813 (Accounting)

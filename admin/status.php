@@ -50,6 +50,21 @@ try {
     $acct = [];
 }
 
+$acctErr = [];
+try {
+    $acctErr = $pdo->query(
+        "SELECT ts, router_ip, peer_ip, nas_ip, username, status_type, error_type, message
+         FROM radius_accounting_errors
+         ORDER BY ts DESC, id DESC
+         LIMIT 120"
+    )->fetchAll();
+    if (!is_array($acctErr)) {
+        $acctErr = [];
+    }
+} catch (Throwable $e) {
+    $acctErr = [];
+}
+
 $store = store_load();
 $routers = array_map('router_normalize', $store['routers']);
 $routerByIp = [];
@@ -175,6 +190,9 @@ ob_start();
                     <a class="btn btn-sm btn-outline-primary" href="<?php echo e(base_url('radius-accounting.php')); ?>">
                         Open full accounting
                     </a>
+                    <a class="btn btn-sm btn-outline-danger ms-2" href="<?php echo e(base_url('radius-accounting-errors.php')); ?>">
+                        Open accounting errors
+                    </a>
                 </div>
             </div>
         </div>
@@ -247,6 +265,56 @@ ob_start();
             </div>
         </div>
     </div>
+
+    <div class="col-12">
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <div class="h6 mb-0">RADIUS Accounting Errors (Latest)</div>
+                <div class="small text-body-secondary mt-1">Shown when accounting packets are dropped or DB insert fails.</div>
+                <div class="table-responsive mt-3">
+                    <table class="table table-sm align-middle status-table">
+                        <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Type</th>
+                            <th>Router/NAS</th>
+                            <th>User</th>
+                            <th>Message</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <?php if (count($acctErr) === 0): ?>
+                            <tr>
+                                <td colspan="5" class="text-body-secondary">No accounting errors.</td>
+                            </tr>
+                        <?php else: ?>
+                            <?php foreach ($acctErr as $r): ?>
+                                <?php
+                                $ts = (int)($r['ts'] ?? 0);
+                                $typ = (string)($r['error_type'] ?? '');
+                                $routerIp = (string)($r['router_ip'] ?? '');
+                                $peerIp = (string)($r['peer_ip'] ?? '');
+                                $nasIp = (string)($r['nas_ip'] ?? '');
+                                $user = (string)($r['username'] ?? '');
+                                $msg = (string)($r['message'] ?? '');
+                                $badge = strtolower($typ) === 'error' ? 'danger' : 'warning';
+                                $ipLine = trim(($routerIp !== '' ? $routerIp : '') . ($nasIp !== '' && $nasIp !== $routerIp ? ' / ' . $nasIp : '') . ($peerIp !== '' && $peerIp !== $routerIp ? ' / peer ' . $peerIp : ''));
+                                ?>
+                                <tr>
+                                    <td class="font-monospace"><?php echo e($ts > 0 ? gmdate('Y-m-d H:i:s', $ts) : '-'); ?></td>
+                                    <td><span class="badge text-bg-<?php echo e($badge); ?>"><?php echo e($typ !== '' ? strtoupper($typ) : 'WARN'); ?></span></td>
+                                    <td class="font-monospace"><?php echo e($ipLine !== '' ? $ipLine : '-'); ?></td>
+                                    <td class="font-monospace"><?php echo e($user !== '' ? $user : '-'); ?></td>
+                                    <td><?php echo e($msg); ?></td>
+                                </tr>
+                            <?php endforeach; ?>
+                        <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <script>
@@ -281,4 +349,3 @@ ob_start();
 <?php
 $contentHtml = ob_get_clean();
 require __DIR__ . '/_partials/layout.php';
-

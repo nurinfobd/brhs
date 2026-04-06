@@ -266,18 +266,48 @@ while (true) {
             $nasDbg = $nasIp !== '' ? $nasIp : '-';
             radius_dbg("drop: unknown router peer_ip={$peerIp} nas_ip={$nasDbg}");
             store_insert_app_log('warning', 'radius', 'drop unknown router', ['peer_ip' => $peerIp, 'nas_ip' => $nasDbg, 'code' => $code]);
+            if ($code === 4) {
+                store_insert_radius_accounting_error([
+                    'error_type' => 'warning',
+                    'router_ip' => '',
+                    'peer_ip' => $peerIp,
+                    'nas_ip' => $nasDbg !== '-' ? $nasDbg : '',
+                    'message' => 'Accounting dropped: unknown router',
+                    'raw_attrs' => radius_attrs_to_json($attrs),
+                ]);
+            }
             continue;
         }
         $router = router_normalize($router);
         if ((int)($router['radius_enabled'] ?? 0) !== 1) {
             radius_dbg("drop: router_ip={$routerIp} peer_ip={$peerIp} radius_disabled=1");
             store_insert_app_log('warning', 'radius', 'drop router disabled', ['router_ip' => $routerIp, 'peer_ip' => $peerIp, 'code' => $code]);
+            if ($code === 4) {
+                store_insert_radius_accounting_error([
+                    'error_type' => 'warning',
+                    'router_ip' => $routerIp,
+                    'peer_ip' => $peerIp,
+                    'nas_ip' => $routerIp,
+                    'message' => 'Accounting dropped: router RADIUS disabled',
+                    'raw_attrs' => radius_attrs_to_json($attrs),
+                ]);
+            }
             continue;
         }
         $secret = (string)($router['radius_secret'] ?? '');
         if ($secret === '') {
             radius_dbg("drop: router_ip={$routerIp} peer_ip={$peerIp} missing_secret");
             store_insert_app_log('warning', 'radius', 'drop router missing secret', ['router_ip' => $routerIp, 'peer_ip' => $peerIp, 'code' => $code]);
+            if ($code === 4) {
+                store_insert_radius_accounting_error([
+                    'error_type' => 'warning',
+                    'router_ip' => $routerIp,
+                    'peer_ip' => $peerIp,
+                    'nas_ip' => $routerIp,
+                    'message' => 'Accounting dropped: router secret missing',
+                    'raw_attrs' => radius_attrs_to_json($attrs),
+                ]);
+            }
             continue;
         }
 
@@ -485,17 +515,31 @@ while (true) {
                 }
             }
 
-            store_insert_radius_accounting([
-                'ts' => time(),
-                'nas_ip' => $routerIp,
-                'username' => $uNameStore,
-                'session_id' => $sessId,
-                'status_type' => $statusType,
-                'input_octets' => $inTotal,
-                'output_octets' => $outTotal,
-                'session_time' => $sessTime,
-                'raw_attrs' => radius_attrs_to_json($attrs),
-            ]);
+            try {
+                store_insert_radius_accounting([
+                    'ts' => time(),
+                    'nas_ip' => $routerIp,
+                    'username' => $uNameStore,
+                    'session_id' => $sessId,
+                    'status_type' => $statusType,
+                    'input_octets' => $inTotal,
+                    'output_octets' => $outTotal,
+                    'session_time' => $sessTime,
+                    'raw_attrs' => radius_attrs_to_json($attrs),
+                ]);
+            } catch (Throwable $e) {
+                store_insert_radius_accounting_error([
+                    'error_type' => 'error',
+                    'router_ip' => $routerIp,
+                    'peer_ip' => $peerIp,
+                    'nas_ip' => $routerIp,
+                    'username' => $uNameStore,
+                    'session_id' => $sessId,
+                    'status_type' => $statusType,
+                    'message' => 'Accounting insert failed: ' . $e->getMessage(),
+                    'raw_attrs' => radius_attrs_to_json($attrs),
+                ]);
+            }
             if ($statusType !== '' && $statusType !== 'Interim-Update') {
                 store_insert_app_log('info', 'radius', 'accounting ' . $statusType, ['router_ip' => $routerIp, 'peer_ip' => $peerIp, 'user' => $uNameStore, 'session_id' => $sessId]);
             }

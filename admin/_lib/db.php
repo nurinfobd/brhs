@@ -282,6 +282,26 @@ function db_migrate(): void
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
     );
 
+    $pdo->exec(
+        "CREATE TABLE IF NOT EXISTS radius_accounting_errors (
+            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            ts INT UNSIGNED NOT NULL,
+            router_ip VARCHAR(45) NOT NULL DEFAULT '',
+            peer_ip VARCHAR(45) NOT NULL DEFAULT '',
+            nas_ip VARCHAR(45) NOT NULL DEFAULT '',
+            username VARCHAR(64) NOT NULL DEFAULT '',
+            session_id VARCHAR(128) NOT NULL DEFAULT '',
+            status_type VARCHAR(32) NOT NULL DEFAULT '',
+            error_type VARCHAR(48) NOT NULL DEFAULT 'error',
+            message TEXT NOT NULL,
+            raw_attrs MEDIUMTEXT NULL,
+            INDEX idx_ra_err_ts (ts),
+            INDEX idx_ra_err_router_ts (router_ip, ts),
+            INDEX idx_ra_err_type_ts (error_type, ts),
+            INDEX idx_ra_err_user_ts (username, ts)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+
     $cacheCols = $pdo->query("SHOW COLUMNS FROM router_interface_snmp_cache")->fetchAll();
     $cacheTypes = [];
     foreach ($cacheCols as $c) {
