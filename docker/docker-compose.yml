@@ -3,10 +3,15 @@ services:
     image: mariadb:10.11
     command: ["--port=3307"]
     environment:
-      MYSQL_ROOT_PASSWORD: root
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
       MYSQL_DATABASE: cityuniversity
     volumes:
       - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -P 3307 --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     ports:
       - "8080:80"
       - "1812:1812/udp"
@@ -37,4 +42,3 @@ services:
 
 volumes:
   db_data:
-

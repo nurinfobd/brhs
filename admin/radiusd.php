@@ -15,7 +15,16 @@ require __DIR__ . '/_lib/mikrotik.php';
 try {
     db_migrate();
 } catch (Throwable $e) {
+    $cfg = app_config();
+    $db = is_array($cfg['db'] ?? null) ? $cfg['db'] : [];
+    $host = (string)($db['host'] ?? '');
+    $port = (string)($db['port'] ?? '');
+    $name = (string)($db['name'] ?? '');
+    $user = (string)($db['user'] ?? '');
     fwrite(STDERR, "DB migrate failed\n");
+    fwrite(STDERR, "DB: host={$host} port={$port} name={$name} user={$user}\n");
+    fwrite(STDERR, "Error: " . $e->getMessage() . "\n");
+    fwrite(STDERR, "Hint: If your MySQL is on 3306, either edit admin/_lib/config.php or set env CITYU_DB_PORT=3306\n");
     exit(1);
 }
 
