@@ -98,13 +98,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $error = 'Invalid profile.';
     } else {
         try {
+            $quotaBytes = 0;
+            $pl = store_get_hotspot_profile_limit($routerId, $profile);
+            if (is_array($pl)) {
+                $quotaBytes = (int)($pl['quota_bytes'] ?? 0);
+            }
+            if ($quotaBytes <= 0) {
+                $error = 'Quota is not set for this profile. Set quota in Hotspot Profiles.';
+            } else {
             $existing = store_find_radius_user_by_username($mac);
             if (is_array($existing)) {
-                store_update_radius_user((string)($existing['id'] ?? ''), $mac, $profile, null, 0, $mac, 0);
+                store_update_radius_user((string)($existing['id'] ?? ''), $mac, $profile, null, $quotaBytes, $mac, 0);
             } else {
-                store_create_radius_user($mac, $profile, null, 0, $mac, 0);
+                store_create_radius_user($mac, $profile, null, $quotaBytes, $mac, 0);
             }
             $created = true;
+            }
         } catch (Throwable $e) {
             $error = 'Unable to create user.';
         }

@@ -301,3 +301,73 @@ MikroTik Hotspot সাধারণত PAP সাপোর্ট করে।
 - **Accounting log আসছে না**
   - MikroTik `/radius` এ accounting=yes আছে কিনা দেখুন
   - UDP 1813 allow আছে কিনা দেখুন
+
+---
+
+## 10) Update / Upgrade (আগে deploy করা সার্ভারে আপডেট)
+
+এই প্রজেক্টে DB migration অটো রান হয়:
+- Admin portal page load হলে (যেমন `admin/login.php`)
+- এবং RADIUS daemon start হলে (`php admin/radiusd.php`)
+
+তাই update করার পর সাধারণত শুধু **code update + daemon restart** করলেই হবে।
+
+### 10.1) Ubuntu 24.04 (Git deploy)
+
+1) Code update:
+
+```bash
+cd /var/www/cityuniversity
+sudo git pull
+sudo chown -R www-data:www-data /var/www/cityuniversity
+sudo systemctl reload apache2
+```
+
+2) Migration trigger:
+- Browser থেকে একবার ওপেন করুন: `http://your-domain.com/admin/login.php`
+
+3) RADIUS daemon restart (systemd হলে):
+
+```bash
+sudo systemctl restart cityu-radiusd.service
+sudo systemctl status cityu-radiusd.service
+```
+
+Logs:
+
+```bash
+sudo journalctl -u cityu-radiusd.service -f
+```
+
+### 10.2) Windows + XAMPP
+
+1) XAMPP Control Panel থেকে Apache + MySQL Start করুন  
+2) যদি git ব্যবহার করেন:
+
+```powershell
+cd C:\xampp\htdocs\cityuniversity
+git pull
+```
+
+3) RADIUS daemon restart:
+- যে window এ `php admin\radiusd.php` চলছে, সেখানে Ctrl + C চাপুন
+- তারপর আবার চালান:
+
+```powershell
+cd C:\xampp\htdocs\cityuniversity
+php admin\radiusd.php
+```
+
+### 10.3) Non‑Git deploy (zip/copy deploy)
+
+1) Backup নিন:
+- Database backup (phpMyAdmin export)
+- Project folder backup
+
+2) নতুন code কপি করে পুরানো folder এর উপর overwrite করুন, কিন্তু এগুলো preserve করুন:
+- `admin/_lib/config.php` (DB config)
+- `admin/uploads/` (যদি image upload ব্যবহার করেন)
+
+3) এরপর:
+- Admin login page একবার open করুন (migration auto হবে)
+- RADIUS daemon restart করুন
