@@ -4,6 +4,20 @@ require __DIR__ . '/_lib/bootstrap.php';
 $title = 'Hotspot User';
 $active = 'hotspot';
 
+function radius_password_display(array $row): string
+{
+    $enc = (string)($row['password_enc'] ?? '');
+    $plain = store_decrypt_password($enc);
+    if ($plain !== '') {
+        return $plain;
+    }
+    $u = strtoupper(trim((string)($row['username'] ?? '')));
+    if ($u === '' || !preg_match('/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/', $u)) {
+        return '';
+    }
+    return $u;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     $action = (string)($_POST['action'] ?? '');
@@ -194,6 +208,7 @@ ob_start();
                 <thead>
                 <tr>
                     <th>User</th>
+                    <th class="d-none d-sm-table-cell">Password</th>
                     <th class="d-none d-sm-table-cell">Profile</th>
                     <th class="text-end d-none d-sm-table-cell">Quota</th>
                     <th class="text-end d-none d-sm-table-cell">Used</th>
@@ -205,14 +220,15 @@ ob_start();
                 <tbody id="urBody">
                 <?php if (count($rows) === 0): ?>
                     <tr>
-                        <td colspan="7" class="text-body-secondary">No hotspot users. Add one to enable RADIUS authentication.</td>
+                        <td colspan="8" class="text-body-secondary">No hotspot users. Add one to enable RADIUS authentication.</td>
                     </tr>
                 <?php else: ?>
                     <?php foreach ($rows as $r): ?>
                         <?php
                         $usernameStr = (string)($r['username'] ?? '');
+                        $passwordDisplay = radius_password_display($r);
                         $profileStr = (string)($r['profile'] ?? '');
-                        $searchBlob = strtolower(trim($usernameStr . ' ' . $profileStr));
+                        $searchBlob = strtolower(trim($usernameStr . ' ' . $profileStr . ' ' . $passwordDisplay));
                         $quotaUser = (int)($r['quota_bytes'] ?? 0);
                         $quota = $quotaUser > 0 ? $quotaUser : 0;
                         $used = (int)($r['used_bytes'] ?? 0);
@@ -226,6 +242,9 @@ ob_start();
                             <td class="fw-semibold font-monospace">
                                 <?php echo e($usernameStr); ?>
                                 <div class="d-sm-none mt-1 fw-normal">
+                                    <?php if ($passwordDisplay !== ''): ?>
+                                        <span class="badge text-bg-light border font-monospace">Pass: <?php echo e($passwordDisplay); ?></span>
+                                    <?php endif; ?>
                                     <?php if ($profileStr !== ''): ?>
                                         <span class="badge text-bg-light border"><?php echo e($profileStr); ?></span>
                                     <?php endif; ?>
@@ -234,6 +253,9 @@ ob_start();
                                     <?php endif; ?>
                                     <span class="badge text-bg-light border font-monospace"><?php echo e(number_format($usedGb, 2)); ?> GB</span>
                                 </div>
+                            </td>
+                            <td class="d-none d-sm-table-cell font-monospace">
+                                <?php echo e($passwordDisplay !== '' ? $passwordDisplay : '-'); ?>
                             </td>
                             <td class="d-none d-sm-table-cell"><?php echo e($profileStr !== '' ? $profileStr : '-'); ?></td>
                             <td class="text-end font-monospace d-none d-sm-table-cell"><?php echo $quota > 0 ? e(number_format($quotaGb, 2)) . ' GB' : '-'; ?></td>

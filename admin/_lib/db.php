@@ -181,6 +181,7 @@ function db_migrate(): void
             package_id BIGINT UNSIGNED NULL,
             quota_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
             password_hash VARCHAR(255) NOT NULL,
+            password_enc TEXT NULL,
             disabled TINYINT(1) NOT NULL DEFAULT 0,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
@@ -203,6 +204,9 @@ function db_migrate(): void
     }
     if (!in_array('quota_bytes', $ruExisting, true)) {
         $pdo->exec("ALTER TABLE radius_users ADD COLUMN quota_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER package_id");
+    }
+    if (!in_array('password_enc', $ruExisting, true)) {
+        $pdo->exec("ALTER TABLE radius_users ADD COLUMN password_enc TEXT NULL AFTER password_hash");
     }
 
     $pdo->exec(

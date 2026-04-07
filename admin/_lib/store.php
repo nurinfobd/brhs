@@ -74,6 +74,58 @@ function store_insert_app_log(string $level, string $category, string $message, 
     }
 }
 
+function store_secret_key(): string
+{
+    $b64 = getenv('CITYU_APP_KEY');
+    if (!is_string($b64) || $b64 === '') {
+        return '';
+    }
+    $raw = base64_decode($b64, true);
+    if (!is_string($raw) || $raw === '' || strlen($raw) < 32) {
+        return '';
+    }
+    return substr($raw, 0, 32);
+}
+
+function store_encrypt_password(string $plain): ?string
+{
+    $plain = (string)$plain;
+    if ($plain === '') {
+        return null;
+    }
+    $key = store_secret_key();
+    if ($key === '') {
+        return null;
+    }
+    $iv = random_bytes(12);
+    $tag = '';
+    $cipher = openssl_encrypt($plain, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+    if (!is_string($cipher) || $cipher === '' || !is_string($tag) || strlen($tag) !== 16) {
+        return null;
+    }
+    return base64_encode($iv . $tag . $cipher) ?: null;
+}
+
+function store_decrypt_password(?string $enc): string
+{
+    if (!is_string($enc) || $enc === '') {
+        return '';
+    }
+    $key = store_secret_key();
+    if ($key === '') {
+        return '';
+    }
+    $raw = base64_decode($enc, true);
+    if (!is_string($raw) || strlen($raw) < 12 + 16 + 1) {
+        return '';
+    }
+    $iv = substr($raw, 0, 12);
+    $tag = substr($raw, 12, 16);
+    $cipher = substr($raw, 28);
+    $plain = openssl_decrypt($cipher, 'aes-256-gcm', $key, OPENSSL_RAW_DATA, $iv, $tag);
+    return is_string($plain) ? $plain : '';
+}
+
 function store_get_router(string $routerId): ?array
 {
     $pdo = db();
@@ -384,9 +436,10 @@ function store_create_radius_user(string $username, string $profile, ?int $packa
     $quotaBytes = max(0, $quotaBytes);
     $pdo = db();
     $now = gmdate('Y-m-d H:i:s');
+    $enc = store_encrypt_password($passwordPlain);
     $stmt = $pdo->prepare(
-        "INSERT INTO radius_users (username, profile, package_id, quota_bytes, password_hash, disabled, created_at, updated_at)
-         VALUES (:u, :profile, :pkg, :quota, :p, :d, :c, :u2)"
+        "INSERT INTO radius_users (username, profile, package_id, quota_bytes, password_hash, password_enc, disabled, created_at, updated_at)
+         VALUES (:u, :profile, :pkg, :quota, :p, :pe, :d, :c, :u2)"
     );
     $stmt->execute([
         ':u' => $username,
@@ -394,6 +447,7 @@ function store_create_radius_user(string $username, string $profile, ?int $packa
         ':pkg' => $packageId,
         ':quota' => $quotaBytes,
         ':p' => password_hash($passwordPlain, PASSWORD_DEFAULT),
+        ':pe' => $enc,
         ':d' => $disabled ? 1 : 0,
         ':c' => $now,
         ':u2' => $now,
@@ -412,9 +466,10 @@ function store_update_radius_user(string $id, string $username, string $profile,
     $now = gmdate('Y-m-d H:i:s');
 
     if ($newPasswordPlain !== null && $newPasswordPlain !== '') {
+        $enc = store_encrypt_password($newPasswordPlain);
         $stmt = $pdo->prepare(
             "UPDATE radius_users
-             SET username = :u, profile = :profile, package_id = :pkg, quota_bytes = :quota, password_hash = :p, disabled = :d, updated_at = :t
+             SET username = :u, profile = :profile, package_id = :pkg, quota_bytes = :quota, password_hash = :p, password_enc = :pe, disabled = :d, updated_at = :t
              WHERE id = :id"
         );
         $stmt->execute([
@@ -423,6 +478,7 @@ function store_update_radius_user(string $id, string $username, string $profile,
             ':pkg' => $packageId,
             ':quota' => $quotaBytes,
             ':p' => password_hash($newPasswordPlain, PASSWORD_DEFAULT),
+            ':pe' => $enc,
             ':d' => $disabled ? 1 : 0,
             ':t' => $now,
             ':id' => $id,
